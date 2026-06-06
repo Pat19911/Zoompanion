@@ -1,0 +1,488 @@
+===========================================================================
+ALLERGIC CLIFFS PUZZLE - ALGORITHM REFERENCE
+===========================================================================
+Compiled from: ied206/scummvm-zoombini reverse engineering project,
+FableVision Puzzle Guide, TERC Mathematical Learning guide, Norledge
+Maths set-theory analysis, community walkthroughs, and game observation.
+===========================================================================
+
+
+1. OVERVIEW
+-----------
+The Allergic Cliffs is the first puzzle on the "Big, Bad, and Hungry"
+trail (Route 0 / ZMB_ROUTE_BIG_BAD_HUNGRY). It is identified internally
+as BRIDGE (ZMB_SI_BRIDGE_02) and loads from the "BRIDGE.MHK" archive.
+
+Two cliff faces guard two rope bridges spanning a chasm. Each cliff is
+"allergic" to certain Zoombini attributes and will sneeze back any
+Zoombini that triggers its allergy. The cliffs operate as COMPLEMENTS:
+what one cliff accepts, the other rejects, and vice versa. Every
+Zoombini can cross exactly one bridge.
+
+Six wooden pegs hold the bridges in place. Each incorrect placement
+(sneeze) removes one peg. After 6 errors the bridges collapse and all
+remaining Zoombinis are stranded (sent back to Zoombini Isle).
+
+Win condition: All 16 Zoombinis cross safely.
+Lose condition: 6 incorrect placements (bridge collapse).
+
+
+2. ZOOMBINI ATTRIBUTES (from zoombini_state.h)
+-----------------------------------------------
+Each Zoombini has exactly 4 attributes, each with 5 possible values:
+
+  struct ZmbTrait {
+      byte _head;   // Hair: 1-5
+      byte _eye;    // Eyes: 1-5
+      byte _nose;   // Nose: 1-5
+      byte _foot;   // Feet: 1-5
+  };
+
+  TRAIT_NONE = 0 (incomplete/unset)
+  Valid range: 1 through 5
+  Total SNOID combinations: 5^4 = 625
+
+Attribute values (from game observation and guides):
+
+  Hair (head):  1=Spiked, 2=Ponytail, 3=Green Cap, 4=Straight, 5=Balding
+  Eyes:         1=Brown, 2=One Eye, 3=Sleepy/Half-closed, 4=Spectacles, 5=Sunglasses
+  Nose color:   1=Green, 2=Orange, 3=Red, 4=Purple, 5=Blue
+  Feet:         1=Shoes, 2=Skates, 3=Wheels, 4=Propeller, 5=Springs
+
+  (Note: The mapping of integer values 1-5 to specific visual features is
+   based on game observation. The original binary uses these as indices
+   into sprite lookup tables for body part rendering.)
+
+
+3. DIFFICULTY SYSTEM (from zoombini_state.h / zoombini_state.cpp)
+-----------------------------------------------------------------
+Difficulty is tracked per-puzzle via page flags stored in ZmbStateFile.
+
+  enum ZMB_DIFFICULTY_ID : uint16 {
+      ZMB_DIFFICULTY_NOTVISITED_00 = 0,   // Never played
+      ZMB_DIFFICULTY_LEVEL1_01    = 1,    // "Not So Easy"
+      ZMB_DIFFICULTY_LEVEL2_02    = 2,    // "Oh So Hard"
+      ZMB_DIFFICULTY_LEVEL3_05    = 5,    // "Very Hard"
+      ZMB_DIFFICULTY_LEVEL4_12    = 12,   // "Very Very Hard"
+  };
+
+Difficulty advances based on bits in the page flag word:
+  - _pageFlagBridge (uint16) stores completion state for the Bridge puzzle
+  - Bits 0x1000 and 0x2000 track completion attempts
+  - getDifficultyIdFromPageFlag() reads these bits to determine the
+    current difficulty tier
+
+A _practiceLevel variable (range 1-4) can override normal difficulty
+calculation, allowing isolated practice at any level independent of
+route progression.
+
+The non-linear enum values (0, 1, 2, 5, 12) likely correspond to
+internal thresholds or scoring in the original binary.
+
+
+4. RULE STRUCTURE BY DIFFICULTY LEVEL
+--------------------------------------
+The puzzle is a "guess my rule" game. At startup, the game randomly
+selects which attribute(s) and value(s) define the rule. The rule
+partitions all possible Zoombinis into two complementary sets: those
+accepted by the top bridge and those accepted by the bottom bridge.
+
+--- LEVEL 1: "Not So Easy" ---
+Rule type: Single attribute, single value
+Logic: A = {zoombinis with attribute X having value V}
+       Complement = everything else
+
+Example: Top cliff rejects pink noses. Bottom cliff rejects all
+         non-pink noses.
+
+Selection algorithm:
+  1. Randomly pick one attribute category (hair/eyes/nose/feet)
+     using rand() % 4
+  2. Randomly pick one value (1-5) within that attribute
+     using rand() % 5 + 1
+  3. Assign to one cliff (rand() % 2 determines top vs bottom)
+
+Set theory: Simple set and its absolute complement.
+            |A| + |complement(A)| = 16 (total Zoombinis)
+
+--- LEVEL 2: "Oh So Hard" ---
+Rule type: Single attribute, two values (from the SAME attribute type)
+Logic: A = {zoombinis with attribute X having value V1 OR V2}
+       Complement = all Zoombinis whose attribute X is not V1 or V2
+
+Example: Top cliff accepts one-eyed OR bespectacled Zoombinis only.
+         Bottom cliff accepts all other eye types.
+
+Selection algorithm:
+  1. Randomly pick one attribute category
+  2. Randomly pick two distinct values from that attribute
+     (pick first value, then pick second ensuring it differs)
+  3. The rule is: cliff A accepts zoombinis matching EITHER value
+  4. Assign direction (top/bottom) randomly
+
+Set theory: Two disjoint subsets within the same attribute category,
+            forming a union. Since both values come from the same
+            attribute, a Zoombini can match at most one (each Zoombini
+            has exactly one value per attribute). The Venn diagram shows
+            two non-overlapping circles within the same universal set.
+
+--- LEVEL 3: "Very Hard" ---
+Rule type: Two values from DIFFERENT attribute types (cross-attribute)
+Logic: A = {zoombinis with attribute X=V1 AND attribute Y=V2}
+       One cliff rejects A, the other rejects complement(A)
+
+BUT the Steam walkthrough and Norledge analysis clarify the actual rule:
+  - One cliff is allergic to Zoombinis that DON'T have BOTH features
+    (i.e., allergic to complement of intersection)
+  - The other cliff is allergic to Zoombinis that have EITHER feature
+    (i.e., allergic to the union)
+
+More precisely, the rule creates an intersection:
+  Let S1 = {zoombinis with attribute X = V1}
+  Let S2 = {zoombinis with attribute Y = V2}
+
+  Bridge A accepts: S1 INTERSECT S2 (have BOTH features)
+  Bridge B accepts: complement(S1 INTERSECT S2) = NOT(S1) OR NOT(S2)
+
+  OR equivalently (alternate interpretation from walkthroughs):
+  Bridge A accepts: S1 UNION S2 (have EITHER feature)
+  Bridge B accepts: complement(S1 UNION S2) (have NEITHER feature)
+
+The key mathematical advance: because the two values come from
+DIFFERENT attribute types, the sets CAN overlap. A Zoombini might have
+wheels AND straight hair, satisfying both conditions simultaneously.
+This introduces Venn diagram intersections.
+
+Selection algorithm:
+  1. Randomly pick two DIFFERENT attribute categories
+  2. Randomly pick one value from each category
+  3. Define the rule as their intersection or union
+  4. Assign direction randomly
+
+--- LEVEL 4: "Very Very Hard" ---
+Rule type: Three values from (potentially) different attribute types
+Logic: Extension of Level 3 with a third feature condition
+
+Example: One cliff accepts Zoombinis with a spring foot, one eye, OR a
+blue nose (the union of three sets across different attributes).
+
+Selection algorithm:
+  1. Randomly pick up to three attribute categories
+     (may repeat a category, or use three distinct categories)
+  2. Randomly pick one value from each selected category
+  3. The rule involves the union or intersection of these three sets
+  4. Assign direction randomly
+
+Set theory: Triple Venn diagram with complex overlapping regions.
+The player must identify three separate feature conditions.
+
+Norledge Maths analysis notes: "there's no workable algorithmic
+approach" guaranteeing consistent success with varied Zoombinis at
+this level, requiring sophisticated hypothesis testing.
+
+
+5. RANDOM NUMBER GENERATOR (from zoombini_random.h / zoombini_random.cpp)
+--------------------------------------------------------------------------
+The ScummVM implementation faithfully reproduces the original game's RNG:
+
+  class ZoombiniRandom {
+      uint16 _randSeed;
+  public:
+      void setSeed(uint16 seed);
+      uint16 getRandomNumber(uint16 max);
+      uint16 getRandomNumber(uint16 min, uint16 max);
+      int16 getRandomNumberSigned(int16 min, int16 max);
+  };
+
+Core algorithm (Linear Congruential Generator):
+
+  uint16 getRandomNumber(uint16 max) {
+      _randSeed = 214013u * _randSeed + 2531011u;
+      return static_cast<uint16>(_randSeed) % (max + 1);
+  }
+
+This uses the EXACT SAME constants as Microsoft Visual C++ runtime's
+rand() function (multiplier=214013, increment=2531011). The original
+1996 game was compiled with MSVC for Windows, so this is a direct match
+to the original binary's random behavior.
+
+Key properties:
+  - 16-bit seed (0-65535), but seed=0 is auto-incremented to 1
+  - Period is at most 65536 before repeating
+  - The modulo operation (% (max+1)) means getRandomNumber(4) returns 0-4
+  - Seed is initialized from system time or event recorder
+
+Range variants:
+  getRandomNumber(min, max) = getRandomNumber(max - min) + min
+  getRandomNumberSigned(min, max) = same logic with int16
+
+
+6. PUZZLE STATE STORAGE (from zoombini_state.h)
+-------------------------------------------------
+Per-puzzle state is stored in page flag words within ZmbStateFile:
+
+  uint16 _pageFlagBridge = 0;  // Allergic Cliffs state
+
+The ZmbStateFile structure spans 44,559 bytes and includes:
+
+  - Audio/input flags (sound enabled, music enabled, sticky mouse, cursor)
+  - All 16 page flags (one per puzzle/location)
+  - Four active Zoombini packs:
+      Isle pack, Basecamp1 pack, Basecamp2 pack, Active pack
+  - Three stored Zoombini collections
+  - Route level tracking (4 routes x difficulty tiers)
+  - Memorial stone records with timestamps
+  - Town development level (0-6)
+
+Active pack structure (ZmbStateActivePack) tracks 16 Zoombinis:
+  - Each Zoombini has a ZmbTrait (head, eye, nose, foot)
+  - Position data per Zoombini
+  - Animation flags per Zoombini
+
+Save format versions:
+  v1: 44,549 bytes
+  v2: 44,559 bytes (current)
+
+
+7. PUZZLE INITIALIZATION SEQUENCE (RECONSTRUCTED)
+---------------------------------------------------
+Based on the ScummVM engine architecture and game behavior analysis:
+
+  1. Player arrives at Bridge page (ZMB_SI_BRIDGE_02)
+  2. Engine loads "BRIDGE.MHK" resource archive
+  3. getDifficultyIdFromPageFlag(_pageFlagBridge) determines level
+  4. Puzzle rule generation:
+     a. Seed the RNG (or continue from current seed state)
+     b. Based on difficulty level, select rule complexity:
+        - Level 1: pick 1 attribute type, 1 value
+        - Level 2: pick 1 attribute type, 2 values
+        - Level 3: pick 2 attribute types, 1 value each
+        - Level 4: pick 2-3 attribute types, 1 value each
+     c. Store the rule internally (not shown to player)
+     d. Randomly assign which cliff (top/bottom) enforces which
+        side of the rule partition
+  5. Initialize 6 pegs (error counter = 0)
+  6. Load all 16 Zoombinis from the active pack
+  7. Display Zoombinis on the left side of the chasm
+  8. Player interaction loop:
+     a. Player drags Zoombini to a bridge
+     b. Check Zoombini's attributes against the assigned rule
+     c. If correct: Zoombini walks across, appears on right side
+     d. If incorrect: Cliff sneezes, Zoombini tossed back,
+        error_count++, remove one peg
+     e. If error_count >= 6: bridges collapse, remaining Zoombinis
+        stranded -> return to Isle
+     f. If all 16 across: puzzle complete, advance difficulty
+
+Note: The specific puzzle page class for Bridge has NOT yet been
+implemented in the scummvm-zoombini fork as of March 2026. The
+repository currently implements:
+  - Core engine (zoombini.cpp/h)
+  - Page framework (zoombini_page.cpp/h)
+  - Interactive base class (interactive_base.cpp/h)
+  - Character animation/rendering (zoombini_scripts.cpp/h, ZmbSnoid)
+  - State management (zoombini_state.cpp/h)
+  - Random number generation (zoombini_random.cpp/h)
+  - Resource loading, graphics, sound, text
+  - Picker page, Basecamp pages, Town page, Transitions
+
+Individual puzzle pages (Bridge, Caves, Pizza, Ferry, etc.) are NOT
+yet implemented as separate classes. The commit history shows active
+development on character rendering and basecamp functionality as of
+March 2026.
+
+
+8. ATTRIBUTE CHECKING LOGIC (RECONSTRUCTED)
+---------------------------------------------
+The rule-checking function for the Allergic Cliffs would work as follows
+(pseudocode reconstruction based on game behavior):
+
+  // Level 1: Single attribute, single value
+  bool matchesRule_Level1(ZmbTrait trait, int attrType, int value) {
+      switch (attrType) {
+          case 0: return trait._head == value;
+          case 1: return trait._eye == value;
+          case 2: return trait._nose == value;
+          case 3: return trait._foot == value;
+      }
+  }
+
+  // Level 2: Single attribute, two values (OR)
+  bool matchesRule_Level2(ZmbTrait trait, int attrType, int v1, int v2) {
+      byte actual;
+      switch (attrType) {
+          case 0: actual = trait._head; break;
+          case 1: actual = trait._eye;  break;
+          case 2: actual = trait._nose; break;
+          case 3: actual = trait._foot; break;
+      }
+      return actual == v1 || actual == v2;
+  }
+
+  // Level 3: Two attributes, one value each (AND or OR)
+  // The exact operator (AND vs OR) determines which bridge accepts:
+  // - AND: bridge accepts zoombinis with BOTH features
+  // - OR/UNION: bridge accepts zoombinis with EITHER feature
+  bool matchesRule_Level3(ZmbTrait trait,
+                          int attrType1, int v1,
+                          int attrType2, int v2) {
+      bool match1 = getAttr(trait, attrType1) == v1;
+      bool match2 = getAttr(trait, attrType2) == v2;
+      // The union interpretation (EITHER feature passes):
+      return match1 || match2;
+  }
+
+  // Level 4: Three attributes/values
+  bool matchesRule_Level4(ZmbTrait trait,
+                          int attrType1, int v1,
+                          int attrType2, int v2,
+                          int attrType3, int v3) {
+      bool match1 = getAttr(trait, attrType1) == v1;
+      bool match2 = getAttr(trait, attrType2) == v2;
+      bool match3 = getAttr(trait, attrType3) == v3;
+      return match1 || match2 || match3;
+  }
+
+  // Bridge assignment:
+  // if matchesRule(zoombini) -> assign to cliff A's bridge
+  // else (complement)       -> assign to cliff B's bridge
+
+
+9. SET THEORY MODEL (from Norledge Maths analysis)
+----------------------------------------------------
+Level 1 - Absolute complement:
+  U = {all 16 zoombinis}
+  A = {zoombinis where attr[i] == v}
+  Bridge_top  = A
+  Bridge_bot  = U \ A  (complement)
+
+Level 2 - Disjoint union within one attribute:
+  A = {zoombinis where attr[i] == v1}
+  B = {zoombinis where attr[i] == v2}
+  Note: A and B are always disjoint (a zoombini has exactly one
+        value per attribute, so A INTERSECT B = empty set)
+  Bridge_top  = A UNION B
+  Bridge_bot  = U \ (A UNION B)
+
+Level 3 - Cross-attribute intersection:
+  A = {zoombinis where attr[i] == v1}
+  B = {zoombinis where attr[j] == v2}  where i != j
+  A INTERSECT B may be non-empty (zoombini can have both features)
+
+  Interpretation varies by source:
+  (a) Bridge accepts UNION:  A UNION B    (either feature suffices)
+      Other bridge:          U \ (A UNION B)  (neither feature)
+  (b) Bridge accepts INTERSECTION: A INTERSECT B (both required)
+      Other bridge:          U \ (A INTERSECT B) (missing at least one)
+
+  The walkthrough description ("allergic to those that DON'T have 2
+  features") suggests interpretation (b): one bridge requires BOTH
+  features, the other rejects those with both.
+
+Level 4 - Triple set with complex overlaps:
+  A = {zoombinis where attr[i] == v1}
+  B = {zoombinis where attr[j] == v2}
+  C = {zoombinis where attr[k] == v3}
+  Bridge accepts: A UNION B UNION C
+  Other bridge:   U \ (A UNION B UNION C)
+
+
+10. KEY SOURCE FILES IN SCUMMVM-ZOOMBINI
+-----------------------------------------
+Repository: https://github.com/ied206/scummvm-zoombini
+Branch: mohawk-zoombini-2026-1-0
+Base path: engines/mohawk/
+
+Core engine:
+  zoombini.h / zoombini.cpp         - Main engine class (MohawkEngine_Zoombini)
+  zoombini_state.h / zoombini_state.cpp  - Game state, save/load, difficulty
+  zoombini_random.h / zoombini_random.cpp - RNG (MSVC-compatible LCG)
+  zoombini_page.h / zoombini_page.cpp     - Page framework, feature/snoid system
+  zoombini_scripts.h / zoombini_scripts.cpp - Animation, pathfinding, events
+  zoombini_graphics.h / zoombini_graphics.cpp - Rendering
+  zoombini_resource.h / zoombini_resource.cpp - MHK resource loading
+  zoombini_sound.h / zoombini_sound.cpp   - Audio
+  zoombini_text.h / zoombini_text.cpp     - Text rendering
+  zoombini_debug.h / zoombini_debug.cpp   - Debug visualization
+
+Page implementations (engines/mohawk/zoombini_pages/):
+  interactive_base.h / interactive_base.cpp - Base class for puzzle pages
+  picker.h / picker.cpp               - Character creation at Zoombini Isle
+  basecamp1.h / basecamp1.cpp         - First campground
+  basecamp2.h / basecamp2.cpp         - Second campground
+  town.h / town.cpp                   - Zoombiniville (destination)
+  rodmap.h / rodmap.cpp               - World map navigation
+  transition_base.h / transition_base.cpp   - Scene transitions
+  transition_logo.h / transition_logo.cpp   - Logo screen
+  transition_xfer.h / transition_xfer.cpp   - Transfer between areas
+  dialog_*.h / dialog_*.cpp           - Various dialog screens
+
+PUZZLE-SPECIFIC PAGES NOT YET IMPLEMENTED (as of 2026-03-19):
+  Bridge (Allergic Cliffs), Caves (Stone Cold Caves), Pizza (Pizza Pass),
+  Ferry (Captain Cajun's Ferryboat), Lilly (Titanic Tattooed Toads),
+  Slides (Stone Rise), Fleens, Hotel (Hotel Dimensia), Net (Mudball Wall),
+  Tunnels (Lion's Lair), Smoke (Mirror Machine), Maze (Bubblewonder Abyss)
+
+
+11. ADDITIONAL REFERENCES
+--------------------------
+- FableVision Puzzle Guide (official):
+  https://www.fablevisiongames.com/documents/Zoombinis_PuzzleGuide.pdf
+  Page 4: Allergic Cliffs description and screenshots
+
+- TERC "Mathematical Learning of Zoombinis":
+  https://www.terc.edu/edge/wp-content/uploads/sites/30/2021/03/mathlearning-1.pdf
+  Pages 2-3: Set theory and reasoning skills analysis
+
+- Norledge Maths - Sneezing Cliffs and Set Theory:
+  https://www.norledgemaths.com/blog/zoombinis-maths-sneezing-cliffs-and-set-theory
+  Detailed difficulty-by-difficulty set theory breakdown
+
+- Steam Community Walkthrough:
+  https://steamcommunity.com/sharedfiles/filedetails/?id=543641267
+  Difficulty rules for all four levels
+
+- Zoombini Wiki (Fandom):
+  https://zoombinis.fandom.com/wiki/The_Allergic_Cliffs
+
+- ScummVM Zoombini fork:
+  https://github.com/ied206/scummvm-zoombini
+  (Branch: mohawk-zoombini-2026-1-0)
+
+
+12. OPEN QUESTIONS / UNKNOWNS
+-------------------------------
+The following details could not be confirmed from available sources:
+
+1. Exact rule-generation algorithm: The precise sequence of rand() calls
+   used to select attributes and values at each difficulty level is not
+   yet reverse-engineered in the ScummVM fork. The puzzle page classes
+   have not been implemented yet.
+
+2. Level 3 operator ambiguity: Multiple sources disagree on whether
+   Level 3 (Very Hard) uses AND (intersection) or OR (union) as the
+   primary rule operator. The walkthrough says "allergic to those that
+   DON'T have 2 features" (suggesting AND/intersection), while the
+   Norledge analysis describes set intersections. The confusion may stem
+   from the complementary nature of the puzzle -- if one bridge uses AND,
+   the other effectively uses OR via De Morgan's law:
+     NOT(A AND B) = NOT(A) OR NOT(B)
+
+3. Level 4 vs Level 3 distinction: The Steam guide says Level 4 is
+   "surprisingly similar to Very Hard." Some sources say it uses 3
+   attributes while others aren't specific. The exact structural
+   difference between Levels 3 and 4 needs confirmation from the binary.
+
+4. Whether the same attribute type can be selected multiple times at
+   higher levels (e.g., two different hair values + one eye value),
+   or if all selected attributes must be from distinct types.
+
+5. The original binary's function addresses for the bridge puzzle init
+   and rule-checking code. The scummvm-zoombini commit messages reference
+   original binary addresses (e.g., "snoidPath_initRoute_454CA9") for
+   other subsystems but the bridge puzzle hasn't been reached yet.
+
+6. Whether the RNG seed is shared across all puzzles or each puzzle
+   has its own seed state. The ZoombiniRandom class uses a single
+   instance but the interaction between puzzle-level seeding and
+   global seeding is not yet documented.

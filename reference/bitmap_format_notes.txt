@@ -1,0 +1,354 @@
+Mohawk tBMP Bitmap Format - Analysis of ScummVM Source Code
+============================================================
+Source: scummvm/engines/mohawk/bitmap.cpp and bitmap.h
+Applicable to: Zoombinis (Logical Journey), CSTime, and other Broderbund Mohawk games
+
+=============================================================================
+1. HEADER FORMAT (8 bytes)
+=============================================================================
+
+The standard Mohawk bitmap header is 8 bytes, read big-endian:
+
+  Offset  Size   Field          Notes
+  ------  ----   -----          -----
+  0x00    2      width          uint16 BE, masked with 0x3FFF (only bottom 14 bits valid)
+  0x02    2      height         uint16 BE, masked with 0x3FFF (only bottom 14 bits valid)
+  0x04    2      bytesPerRow    int16  BE, masked with 0x3FFE (bottom 14 bits, forced even)
+  0x06    2      format         uint16 BE, bitfield (see below)
+
+Format bitfield breakdown:
+  Bits 0-2  (mask 0x0007): Bits per pixel
+      0x0000 = 1 bpp
+      0x0001 = 4 bpp
+      0x0002 = 8 bpp    <-- Zoombinis uses this
+      0x0003 = 16 bpp
+      0x0004 = 24 bpp
+
+  Bit 3     (mask 0x0008): kBitmapHasCLUT - Palette (Color Look-Up Table) follows header
+
+  Bits 4-7  (mask 0x00F0): Draw compression method
+      0x0000 = kDrawRaw   - Raw pixel data
+      0x0010 = kDrawRLE8  - Run-length encoded 8-bit  <-- Common in Zoombinis
+      0x0020 = kDrawMSRLE8 - MS RLE8 (not implemented in base class)
+      0x0030 = kDrawRLE   - Generic RLE
+
+  Bits 8-11 (mask 0x0F00): Pack (primary) compression method
+      0x0000 = kPackNone  - No compression
+      0x0100 = kPackLZ    - LZ compression  <-- Common in Zoombinis
+      0x0200 = kPackLZ1   - LZ variant
+      0x0400 = kPackRiven - Riven-specific compression
+      0x0F00 = kPackXDec  - Unknown/extended
+
+  Bits 12-15 (mask 0xF000): Flags
+      0x1000 = kFlag16_80X86 (for 16bpp: pixel data in x86 byte order)
+      0x1000 = kFlag24_MAC  (for 24bpp: pixel data in Mac 32-bit format)
+
+IMPORTANT: The standard Mohawk class only handles 8bpp and 24bpp. Zoombinis
+uses 8bpp indexed color exclusively.
+
+
+=============================================================================
+2. PALETTE / COLOR TABLE (772 bytes when present)
+=============================================================================
+
+If the kBitmapHasCLUT flag (0x0008) is set, OR if the pack method is Riven
+and bpp is 8, a color table immediately follows the header:
+
+  Offset  Size   Field          Notes
+  ------  ----   -----          -----
+  0x00    2      tableSize      uint16 BE
+  0x02    1      rgbBits        byte - bits per channel
+  0x03    1      colorCount     byte - number of colors (up to 256)
+  0x04    768    palette         256 entries x 3 bytes each
+
+Palette byte order: BGR (Blue, Green, Red) - each entry is read as B,G,R
+and stored internally as R,G,B. This means the on-disk format stores
+colors in reverse order compared to standard RGB.
+
+Total color table size: 4 (sub-header) + 768 (palette data) = 772 bytes.
+The palette is ALWAYS 256 entries (768 bytes) regardless of colorCount.
+
+
+=============================================================================
+3. COMPRESSION TYPES AND ALGORITHMS
+=============================================================================
+
+Mohawk bitmaps use a two-stage compression pipeline:
+  Stage 1: "Pack" compression (primary, decompresses the whole data block)
+  Stage 2: "Draw" compression (secondary, applied per-scanline during rendering)
+
+The combination for Zoombinis is typically: kPackLZ + kDrawRLE8
+
+-----------------------------------------------------------------------------
+3a. kPackNone (0x0000) - No Compression
+-----------------------------------------------------------------------------
+Data is used as-is. No transformation.
+
+-----------------------------------------------------------------------------
+3b. kPackLZ (0x0100) - LZ Compression (Lempel-Ziv)
+-----------------------------------------------------------------------------
+
+This is the primary compression used in Zoombinis. It is a sliding-window
+LZ77 variant with a circular buffer.
+
+LZ Header (10 bytes, immediately after the bitmap header/palette):
+  Offset  Size   Field
+  ------  ----   -----
+  0x00    4      uncompressedSize    uint32 BE
+  0x04    4      compressedSize      uint32 BE
+  0x08    2      dictSize            uint16 BE (must be 0x0400 = 1024)
+
+LZ Constants:
+  LEN_BITS     = 6
+  MIN_STRING   = 3
+  MAX_STRING   = (1 << 6) + 3 - 1 = 66
+  POS_BITS     = 16 - 6 = 10
+  CBUFFERSIZE  = 1 << 10 = 1024
+  POS_MASK     = 1023 (0x3FF)
+
+Decompression Algorithm (decompressLZ):
+  1. Initialize output buffer (at least CBUFFERSIZE bytes), fill with 0x00
+  2. Set insertPos = 0, flags = 0
+  3. Loop while input data remains:
+     a. Shift flags right by 1
+     b. If bit 8 of flags is not set, read a new flags byte:
+        flags = readByte() | 0xFF00
+        (The byte provides 8 flag bits; 0xFF00 ensures the sentinel bit
+         triggers re-read after 8 iterations)
+     c. If flags bit 0 is SET (literal byte):
+        - Read one byte from input, write to output
+        - Advance insertPos (wrap at CBUFFERSIZE boundary)
+     d. If flags bit 0 is CLEAR (back-reference):
+        - Read uint16 BE "offLen"
+        - stringLen = (offLen >> POS_BITS) + MIN_STRING
+          = (offLen >> 10) + 3     [range: 3..66]
+        - stringPos = (offLen + MAX_STRING) & POS_MASK
+          = (offLen + 66) & 0x3FF
+        - Copy stringLen bytes from the circular buffer at stringPos
+        - Handle wrap-around at circular buffer boundaries
+     e. Stop when bytesOut >= uncompressedSize
+
+KEY INSIGHT: The flags byte is a bit field read LSB-first. Each bit tells
+whether the next token is a literal (1) or a back-reference (0). After all
+8 bits are consumed, a new flags byte is read.
+
+-----------------------------------------------------------------------------
+3c. kPackRiven (0x0400) - Riven Compression
+-----------------------------------------------------------------------------
+Not used by Zoombinis. This is a complex duplet-based compression used
+exclusively by Riven. Works on pixel pairs (duplets) with arithmetic
+delta coding. See unpackRiven() and handleRivenSubcommandStream() for
+the full subcommand table.
+
+-----------------------------------------------------------------------------
+3d. kDrawRaw (0x0000) - Raw Drawing
+-----------------------------------------------------------------------------
+Pixels are written directly to the surface row by row.
+  - For 8bpp: read width bytes per row, skip (bytesPerRow - width) padding
+  - For 24bpp: read width*3 bytes (BGR order), convert to display format
+
+-----------------------------------------------------------------------------
+3e. kDrawRLE8 (0x0010) - RLE8 Drawing (PackBits variant)
+-----------------------------------------------------------------------------
+
+This is the secondary compression applied during rendering. Each scanline
+is independently RLE-compressed.
+
+** THIS IS THE KEY ALGORITHM FOR ZOOMBINIS BITMAPS **
+
+Per-scanline format:
+  - 2 bytes: rowByteCount (uint16 BE) - total bytes for this row's data
+  - Followed by a sequence of RLE packets until the row is filled
+
+Each RLE packet:
+  - 1 byte: code
+  - If high bit SET (code & 0x80):
+      FILL RUN: runLen = (code & 0x7F) + 1
+      Read 1 byte value, fill runLen pixels with that value
+  - If high bit CLEAR:
+      COPY RUN: runLen = (code & 0x7F) + 1
+      Read runLen bytes literally from the stream
+
+  Maximum run length per packet: 128 (when code & 0x7F = 127, +1 = 128)
+  Minimum run length per packet: 1 (when code & 0x7F = 0, +1 = 1)
+
+Algorithm (drawRLE8):
+  for each row (0..height-1):
+    rowByteCount = readUint16BE()
+    startPos = stream.pos()
+    remaining = width
+    while remaining > 0:
+      code = readByte()
+      runLen = (code & 0x7F) + 1
+      if runLen > remaining: runLen = remaining
+      if (code & 0x80):
+        val = readByte()
+        fill dst with val for runLen bytes
+      else:
+        read runLen bytes into dst
+      dst += runLen
+      remaining -= runLen
+    seek to startPos + rowByteCount   // skip any padding
+
+NOTE: This is essentially the same as Apple PackBits / TIFF PackBits but
+with inverted semantics for the high bit:
+  - In standard PackBits: negative count = repeat, positive = literal
+  - In Mohawk RLE8: high bit set = repeat, high bit clear = literal
+  - The count encoding is also different (Mohawk uses code & 0x7F + 1,
+    PackBits uses different signed arithmetic)
+
+
+=============================================================================
+4. COMPOUND SHAPES (decodeImages)
+=============================================================================
+
+Zoombinis and CSTime use "compound shapes" -- a single tBMP resource that
+contains multiple sub-images packed together. This is used for sprite
+sheets and animation frames.
+
+Compound Shape Format:
+  1. The outer image is decoded normally via decodeImageData()
+     - The header is read as usual (8 bytes)
+     - The "width" field is REPURPOSED as the sub-image count
+  2. After unpacking (LZ decompression), the data section contains:
+     - An array of uint32 BE offsets (one per sub-image)
+       count = _header.width (the repurposed width field)
+       Each offset is relative to the start of the data section + 8
+     - Followed by the actual sub-image data
+
+  For each sub-image at index i:
+    startPos = dataStartPos + offsets[i] - 8
+    endPos   = dataStartPos + offsets[i+1] - 8   (or stream end for last)
+    Each sub-image is a complete Mohawk bitmap with its own 8-byte header,
+    optional palette, and compressed pixel data.
+
+  The "-8" adjustment accounts for the outer header that was already consumed.
+
+Decoding flow:
+  1. decodeImageData() reads outer header + unpacks (LZ decompress) all data
+  2. decodeImages() reads the offset table from the unpacked data
+  3. For each sub-image, creates a substream and calls decodeImage()
+  4. Each sub-image goes through the full decode pipeline independently
+     (header parse -> unpack -> draw)
+
+
+=============================================================================
+5. ZOOMBINIS-SPECIFIC NOTES
+=============================================================================
+
+Based on the ScummVM source:
+
+a) Zoombinis is explicitly mentioned at line 117 as using compound shapes:
+   "Some Mohawk games (CSTime, Zoombinis) store 'compound shapes'"
+
+b) Zoombinis uses the standard MohawkBitmap class (not MystBitmap, not
+   DOSBitmap, not LivingBooksBitmap_v1). This means:
+   - All multi-byte integers are BIG-ENDIAN
+   - Supported pack methods: kPackNone, kPackLZ, kPackRiven
+   - Supported draw methods: kDrawRaw, kDrawRLE8
+   - Typical combination: kPackLZ + kDrawRLE8
+
+c) The palette is stored BGR on disk (read as B, G, R byte order).
+
+d) There is no special Zoombinis subclass - it uses the generic Mohawk
+   decoder, which means the format is "standard Mohawk tBMP".
+
+e) All data is big-endian (Mac origin format, typical of Broderbund games).
+
+
+=============================================================================
+6. DETAILED PackBits / RLE8 DECOMPRESSION (drawRLE8)
+=============================================================================
+
+This section provides a step-by-step walkthrough of the RLE8 algorithm
+since it is the most important decompression for rendering Zoombinis bitmaps.
+
+Input: A stream positioned after LZ decompression (if any)
+Output: An 8bpp pixel buffer of size width x height
+
+Pseudocode:
+-----------
+  for y = 0 to height - 1:
+      rowByteCount = read_uint16_be(stream)    // total compressed bytes for this row
+      rowStart = stream.position
+
+      dst = surface_row_pointer(y)
+      remaining = width
+
+      while remaining > 0:
+          code = read_byte(stream)
+
+          // Run length is always bottom 7 bits + 1
+          runLen = (code AND 0x7F) + 1
+
+          // Clamp to remaining pixels to prevent buffer overrun
+          if runLen > remaining:
+              runLen = remaining
+
+          if (code AND 0x80) != 0:
+              // === FILL RUN ===
+              // High bit set: repeat a single byte value
+              val = read_byte(stream)
+              for i = 0 to runLen - 1:
+                  dst[i] = val
+          else:
+              // === LITERAL RUN ===
+              // High bit clear: copy raw bytes
+              for i = 0 to runLen - 1:
+                  dst[i] = read_byte(stream)
+
+          dst += runLen
+          remaining -= runLen
+
+      // Seek to the exact end of this row's data
+      // (handles any alignment padding)
+      stream.seek(rowStart + rowByteCount)
+
+Byte encoding summary:
+  0x00..0x7F: Literal run of (code + 1) bytes       [1..128 bytes follow]
+  0x80..0xFF: Fill run of ((code & 0x7F) + 1) bytes  [1 byte follows, repeated]
+
+Examples:
+  code=0x00 -> copy 1 literal byte
+  code=0x05 -> copy 6 literal bytes
+  code=0x7F -> copy 128 literal bytes
+  code=0x80 -> repeat 1 byte, 1 time (degenerate case)
+  code=0x85 -> repeat 1 byte, 6 times
+  code=0xFF -> repeat 1 byte, 128 times
+
+Important implementation notes:
+  - Each row is independently encoded (random access to rows is possible
+    if you track row offsets)
+  - The rowByteCount includes ALL bytes after the 2-byte count itself
+    (i.e., all the RLE packets for that row)
+  - The seek at the end ensures alignment even if decoding consumed fewer
+    bytes than rowByteCount (safety measure)
+  - Endianness: the rowByteCount is BE in standard Mohawk, but LE in
+    some Living Books v1 scenarios (not applicable to Zoombinis)
+
+
+=============================================================================
+7. COMPLETE DECODE PIPELINE FOR A ZOOMBINIS BITMAP
+=============================================================================
+
+For a typical single-image Zoombinis tBMP:
+
+  1. Read 8-byte header (BE): width, height, bytesPerRow, format
+  2. If kBitmapHasCLUT flag set: read 4-byte color table header + 768-byte
+     palette (BGR order, 256 entries)
+  3. Determine pack method from format bits 8-11:
+     - If kPackLZ: read 10-byte LZ header, then LZ-decompress the
+       remaining data into an uncompressed buffer
+     - If kPackNone: use data as-is
+  4. Determine draw method from format bits 4-7:
+     - If kDrawRLE8: for each row, read 2-byte row length, then decode
+       RLE8 packets until row is filled
+     - If kDrawRaw: copy bytesPerRow bytes per row directly
+  5. Result: width x height 8-bit indexed pixel buffer + 256-entry RGB palette
+
+For a compound shape (sprite sheet):
+  1. Same header decode + LZ decompression as above
+  2. Treat header.width as sub-image count
+  3. Read count x uint32 BE offsets from decompressed data
+  4. For each sub-image, create substream and repeat full pipeline (steps 1-5)
+  5. Result: array of MohawkSurface objects, each with own dimensions and palette

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>ZoombiniHelper</RootNamespace>
+    <AssemblyName>ZoombiniHelper.Core</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ZoombiniHelper.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Player-facing UI strings, one JSON table per language. German is the
+         baseline; the others are translations with identical key sets. -->
+    <EmbeddedResource Include="Localization/Resources/*.json" />
+  </ItemGroup>
+</Project>

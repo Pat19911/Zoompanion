@@ -1,0 +1,53 @@
+# Build output
+bin/
+obj/
+*.user
+
+# IDE
+.idea/
+.vs/
+*.suo
+*.iml
+*.user
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Game binaries (copyright; reproducible from owned ISO)
+v1_bin/
+v2_bin/
+
+# Large extracted assets (regeneratable from MHKs via mohawk_parser.py)
+extracted/
+v2_extracted/
+v2_mhk/
+extracted_install/
+bitmaps/
+
+# OS / editor
+.DS_Store
+*~
+*.swp
+
+# Throwaway/scratch outputs
+/tmp/
+*.log
+
+# One-off investigation scripts (Ghidra/Python) — kept local, not pushed.
+# Per CLAUDE.md hygiene: scratch/ is for throwaway iterations, not reuse.
+scratch/
+
+# Local language preference written next to the EXE (not source)
+zoombini-helper-lang.txt
+
+# Personal / machine-specific notes (paths, distribution workflow) — not public
+LOCAL_NOTES.md
+
+# Installer artifacts
+v2_installer_extract/
+ZoombiniHelper*.exe
+memdump-*.txt

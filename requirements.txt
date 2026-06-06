@@ -1,0 +1,8 @@
+# Python dependencies for analysis scripts.
+# Install via:  pip install -r requirements.txt
+#
+# Optionally set $ZOOMBINI_BIN to override the default binary path
+# (default: ./v1_bin/ZOOMBINI._EX)
+
+capstone>=5.0,<6.0
+pefile>=2024.0    # v2 PE32 analysis (pe_loader.py)
