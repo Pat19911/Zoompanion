@@ -18,6 +18,25 @@ belongs in. It never modifies the game; it only reads.
 
 ---
 
+## Quick start — just download and run
+
+**You do not need to build anything.** Grab the ready-to-run program:
+
+1. Go to the **[Releases page](https://github.com/Pat19911/Zoompanion/releases/latest)**
+   and download `ZoombiniHelper.exe`.
+2. **Double-click it.** No installation — it's a single self-contained file
+   (Windows 64-bit). Windows SmartScreen may warn about an unknown publisher the
+   first time; choose *More info → Run anyway*.
+3. On first launch it asks for a language (DE / EN / FR / ES / IT) and remembers it.
+
+> ⚠️ **This is not a game — it's a live helper.** It only does something *while
+> the actual Zoombinis game is running*. Start the **v2 re-release** (Riverdeep,
+> 2001/2002) first, then start Zoompanion: it reads the game live and shows
+> recommendations in a small always-on-top window. If the game isn't running you'll
+> just see a waiting/empty overlay — that's expected, not a bug.
+
+---
+
 ## What it does
 
 The overlay (`ZoombiniHelper`) runs next to the v2 (PE32) game, auto-detects the
