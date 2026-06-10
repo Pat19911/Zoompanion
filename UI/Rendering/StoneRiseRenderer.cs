@@ -70,25 +70,23 @@ public sealed class StoneRiseRenderer : IPuzzleRenderer
         // same count as PairSlots; otherwise the solver finds "solutions"
         // that leave some zbs unassigned, which aren't real solutions.
         //
-        // Construction:
-        //   - Each visible pool zb is one entry (placed zbs stay in the pool
-        //     because they keep handle=0x00000001 — no duplication).
-        //   - The held zb is added once (it has a different handle so the
-        //     pool scanner skipped it).
-        //   - Placed slots are pinned by finding the matching pool entry's
+        // Construction (see StoneRisePoolBuilder for the full rationale):
+        //   - Each visible pool zb is one entry (placed zbs stay in the pool —
+        //     they carry the Pool/Launched handle the scanner accepts).
+        //   - The held zb is ALSO in the scan now (its drag handle 0x04001001
+        //     is in ZoombiniHandle.All), so the builder drops that scanned copy
+        //     and re-adds the held zb exactly once — no double-count.
+        //   - Placed slots are pinned by finding the matching base-pool entry's
         //     hdr1A (= tile.w1 of the slot) and using THAT index in
         //     fixedAssignments. No new entries appended.
-        var solverPool = pool.Select(p => new StoneRiseSolver.PoolZb(p.Hair, p.Eyes, p.Nose, p.Feet)).ToList();
-        int heldPoolIndex = -1;
-        if (held is { } heldZb)
-        {
-            heldPoolIndex = solverPool.Count;
-            solverPool.Add(new StoneRiseSolver.PoolZb(heldZb.Hair, heldZb.Eyes, heldZb.Nose, heldZb.Feet));
-        }
-        var poolIdxByHeaderId = new Dictionary<ushort, int>(pool.Count);
-        for (int i = 0; i < pool.Count; i++)
-            if (pool[i].HeaderId != 0)
-                poolIdxByHeaderId[pool[i].HeaderId] = i;
+        var built = StoneRisePoolBuilder.Build(pool, held);
+        var basePool = built.BaseMembers;
+        var solverPool = built.SolverPool;
+        int heldPoolIndex = built.HeldPoolIndex;
+        var poolIdxByHeaderId = new Dictionary<ushort, int>(basePool.Count);
+        for (int i = 0; i < basePool.Count; i++)
+            if (basePool[i].HeaderId != 0)
+                poolIdxByHeaderId[basePool[i].HeaderId] = i;
 
         var fixedAssignments = new Dictionary<int, int>();
         foreach (var slot in s.PairSlots)
