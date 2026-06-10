@@ -98,6 +98,7 @@ public static class BubblewonderSolver
         // geparkte ZB aus der Park-Liste raus, sonst doppelt im Outcome.
         foreach (var (machineIdx, parkedList) in grid.State.ParkedZbsByMachineIdx.ToList())
         {
+            if (machineIdx == GridState.StrandedIslandMachineIdx) continue;  // gestrandet → nicht re-schickbar
             for (int p = 0; p < parkedList.Count; p++)
             {
                 var preState = grid.CloneState();
@@ -179,8 +180,10 @@ public static class BubblewonderSolver
         // Auch geparkte Insel-ZBs zählen als lösbar: sind ALLE ZBs auf Inseln
         // (Hauptpool leer), kann der Solver sie trotzdem über ihre Insel-Maschine
         // re-launchen und retten. Nur abbrechen wenn es WIRKLICH keine ZBs gibt
-        // (weder Pool noch geparkt) oder keine Maschinen.
-        bool hasParked = grid.State.ParkedZbsByMachineIdx.Any(kv => kv.Value.Count > 0);
+        // (weder Pool noch re-schickbar geparkt) oder keine Maschinen. Gestrandete
+        // (StrandedIslandMachineIdx) zählen NICHT als lösbar.
+        bool hasParked = grid.State.ParkedZbsByMachineIdx
+            .Any(kv => kv.Key != GridState.StrandedIslandMachineIdx && kv.Value.Count > 0);
         if ((zbs.Count == 0 && !hasParked) || grid.Machines.Count == 0)
             return new SolverResult(Array.Empty<Assignment>(), 0, "DFS (empty)");
 
@@ -228,9 +231,13 @@ public static class BubblewonderSolver
         // Such-Kandidaten = Pool + geparkte Insel-ZBs (aktiv schickbar). Gefangene
         // Sticky-ZBs sind KEINE eigenen Züge (sie werden befreit), gehören aber in
         // die Scorability-Berechnung, damit ihr Sig als „kann scoren" gilt.
+        // Gestrandete Insel-ZBs (StrandedIslandMachineIdx) AUSLASSEN: sie sind ohne
+        // bekannte Insel-Maschine nicht re-schickbar — als Kandidat würden sie einen
+        // erfundenen Gewinn-Pfad öffnen (falsche „16/16").
         var allZbs = zbs.ToList();
-        foreach (var (_, parkedList) in grid.State.ParkedZbsByMachineIdx)
-            allZbs.AddRange(parkedList);
+        foreach (var (machineIdx, parkedList) in grid.State.ParkedZbsByMachineIdx)
+            if (machineIdx != GridState.StrandedIslandMachineIdx)
+                allZbs.AddRange(parkedList);
         var scorabilityZbs = new List<SimZb>(allZbs);
         scorabilityZbs.AddRange(grid.State.StickyTrappedByCell.Values);
 
@@ -549,15 +556,18 @@ public static class BubblewonderSolver
         BubblewonderGridModel grid, IReadOnlyList<SimZb> zbs, int beamWidth = DefaultBeamWidth)
     {
         // Geparkte Insel-ZBs sind ebenfalls lösbar (re-launchbar) — nur abbrechen
-        // wenn es weder Pool- noch geparkte ZBs gibt.
-        bool hasParked = grid.State.ParkedZbsByMachineIdx.Any(kv => kv.Value.Count > 0);
+        // wenn es weder Pool- noch (re-schickbare) geparkte ZBs gibt. Gestrandete
+        // (StrandedIslandMachineIdx) zählen NICHT als lösbar.
+        bool hasParked = grid.State.ParkedZbsByMachineIdx
+            .Any(kv => kv.Key != GridState.StrandedIslandMachineIdx && kv.Value.Count > 0);
         if ((zbs.Count == 0 && !hasParked) || grid.Machines.Count == 0)
             return new SolverResult(Array.Empty<Assignment>(), 0, "Beam (empty)");
 
         var relevantAttrs = RelevantAttributes(grid);
         var allZbs = zbs.ToList();
-        foreach (var (_, parkedList) in grid.State.ParkedZbsByMachineIdx)
-            allZbs.AddRange(parkedList);
+        foreach (var (machineIdx, parkedList) in grid.State.ParkedZbsByMachineIdx)
+            if (machineIdx != GridState.StrandedIslandMachineIdx)
+                allZbs.AddRange(parkedList);
 
         // Repräsentant je Signatur über den GANZEN Pool (für config-Scorability).
         var repBySig = new Dictionary<long, SimZb>();
@@ -706,7 +716,10 @@ public static class BubblewonderSolver
     internal static int? FindParkedMachine(GridState state, SimZb zb)
     {
         foreach (var (mIdx, list) in state.ParkedZbsByMachineIdx)
+        {
+            if (mIdx == GridState.StrandedIslandMachineIdx) continue;  // gestrandet → keine re-schickbare Maschine
             if (list.Any(z => z.HeaderId == zb.HeaderId)) return mIdx;
+        }
         return null;
     }
 

@@ -30,14 +30,22 @@ public static class BubblewonderGridModelBuilder
     {
         if (parkedZbs.Count == 0) return grid;
 
+        // Insel-Maschine vorhanden → dort parken (re-schickbar). Sonst unter dem
+        // Stranded-Index parken statt die ZBs zu VERWERFEN. Das frühere
+        // `if (islandMachines.Count == 0) return grid;` war der Bug: bei Boards ohne
+        // erkannte Insel-Maschine fielen die real existierenden Insel-ZBs komplett aus
+        // dem Solver-Grid → der Helper ZEIGTE „1 Insel" (aus parked.Count), das Grid
+        // hatte aber 0 → die Plan-Signatur war um Insel-Landungen instabil → „neu
+        // rechnen". Jetzt sind sie im Grid (Bestand + Signatur stimmen), aber unter
+        // dem Stranded-Index nicht re-schickbar, bis die echte Insel-Spawn gelernt ist.
         var islandMachines = grid.Machines.Where(m => m.IsIsland).ToList();
-        if (islandMachines.Count == 0) return grid;
-
         var newState = grid.CloneState();
         // Pragmatisch: alle geparkten ZBs der ersten Insel-Maschine zuordnen.
         // (Bei Layouts mit mehreren Insel-Maschinen müssten wir per y-Cluster
         //  die richtige Maschine matchen — TODO wenn relevant.)
-        int targetMachineIdx = islandMachines[0].Index;
+        int targetMachineIdx = islandMachines.Count > 0
+            ? islandMachines[0].Index
+            : GridState.StrandedIslandMachineIdx;
         if (!newState.ParkedZbsByMachineIdx.TryGetValue(targetMachineIdx, out var list))
             newState.ParkedZbsByMachineIdx[targetMachineIdx] = list = new List<SimZb>();
         foreach (var zb in parkedZbs)

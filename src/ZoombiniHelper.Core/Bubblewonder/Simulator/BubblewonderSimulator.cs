@@ -104,8 +104,16 @@ public static class BubblewonderSimulator
                     if (isStart) break;
                     if (TryParkOnNearestIsland(zb, pos, grid, state))
                         return Done(SimOutcome.Parked, path, grid, state);
-                    // Keine Insel-Maschine bekannt → toter Endpunkt (konservativ).
-                    return Done(SimOutcome.Dead, path, grid, state);
+                    // Keine Insel-Maschine bekannt: der ZB LANDET auf der Stein-Insel und
+                    // PARKT — er stirbt NICHT (User-verifiziert 2026-05-28). Früher gab er
+                    // hier „konservativ" Dead zurück; das war der Bug: der Live-Read
+                    // klassifiziert dieselbe Landung als geparkt (Insel), die Plan-Sim aber
+                    // als tot → die I-Signatur matchte nie → bei JEDER Insel-Landung
+                    // „neu rechnen". Unter dem Stranded-Index parken = beide Seiten einig.
+                    if (!state.ParkedZbsByMachineIdx.TryGetValue(GridState.StrandedIslandMachineIdx, out var strandedList))
+                        state.ParkedZbsByMachineIdx[GridState.StrandedIslandMachineIdx] = strandedList = new List<SimZb>();
+                    strandedList.Add(zb);
+                    return Done(SimOutcome.Parked, path, grid, state);
 
                 case MechanismType.Passthrough:
                 case MechanismType.Toggle:
@@ -277,9 +285,21 @@ public sealed class GridState
     /// Wird beim Channel-Befreien als Auswurf-Richtung verwendet
     /// ("ZB läuft in die Richtung weiter in die er vorher schon gelaufen ist").</summary>
     public Dictionary<int, Direction> StickyEntryDirByCell { get; init; } = new();
+    /// <summary>Sentinel-Maschinenindex für ZBs, die auf einer Stein-Insel gelandet
+    /// sind, OHNE dass eine Insel-Maschine (Re-Launch-Punkt) bekannt ist. Sie sind
+    /// real geparkt (sterben NICHT — User-verifiziert), aber ohne bekannte Maschine
+    /// vorerst nicht wieder schickbar. Unter diesem Index geparkt zählen sie korrekt
+    /// in den Bestand und die <see cref="ParkedZbsByMachineIdx"/>-Signatur (so dass
+    /// Live-Read und Plan-Simulation übereinstimmen → keine Schein-Abweichung bei
+    /// Insel-Landung), werden aber vom Solver NICHT als re-schickbar enumeriert
+    /// (kein erfundener Gewinn-Pfad). Sobald die echte Insel-Spawn gelernt ist,
+    /// entsteht eine reguläre Insel-Maschine und der ZB wird wieder routbar.</summary>
+    public const int StrandedIslandMachineIdx = -1;
+
     /// <summary>Pro Insel-Maschine die Liste der dort geparkten ZBs (Reihenfolge =
     /// Park-Reihenfolge). Der Solver kann jeden geparkten ZB über die jeweilige
-    /// Insel-Maschine wieder losschicken.</summary>
+    /// Insel-Maschine wieder losschicken. Ausnahme: der Bucket unter
+    /// <see cref="StrandedIslandMachineIdx"/> ist NICHT re-schickbar.</summary>
     public Dictionary<int, List<SimZb>> ParkedZbsByMachineIdx { get; init; } = new();
     /// <summary>ZBs die in dieser Simulation per Channel-Trigger befreit wurden.
     /// Werden vom Runner in Folge-Simulation weitergeführt.</summary>
